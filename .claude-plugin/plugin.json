@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "license": "MIT",
   "userConfig": {
@@ -33,6 +33,18 @@
       "title": "Retry gap (percentage points)",
       "description": "After an automatic compaction leaves the context at or above the compaction percentage, wait until it has grown by this many points before trying again.",
       "default": 10
+    },
+    "minReductionRatio": {
+      "type": "number",
+      "title": "Minimum reduction ratio",
+      "description": "Minimum estimated reduction (0.25 = 25%) for a compaction to replace the history; below it the compaction is skipped.",
+      "default": 0.25
+    },
+    "builtinFallback": {
+      "type": "boolean",
+      "title": "Fall back to the built-in summary",
+      "description": "When on, the main conversation gets Claude Code's built-in summary whenever Jev fails or saves less than the minimum, instead of being left unchanged.",
+      "default": false
     },
     "maxStateTokens": {
       "type": "number",

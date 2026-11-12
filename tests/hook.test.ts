@@ -61,7 +61,17 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, retryGapPercent: 10, model: 'jev-latest' });
+    expect(resolveHookConfig({})).toEqual({
+      compactAtPercent: 60,
+      retryGapPercent: 10,
+      minReductionRatio: 0.25,
+      builtinFallback: false,
+      model: 'jev-latest',
+    });
+    expect(resolveHookConfig({ minReductionRatio: 0.1, builtinFallback: true })).toMatchObject({
+      minReductionRatio: 0.1,
+      builtinFallback: true,
+    });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -72,6 +82,8 @@ describe('hook config', () => {
       goal: 'g',
       compactAtPercent: 60,
       retryGapPercent: 10,
+      minReductionRatio: 0.25,
+      builtinFallback: false,
     });
   });
 
@@ -211,7 +223,7 @@ describe('session.compact hook', () => {
     expect(notices.at(-1)).toMatch(/^compaction skipped, conversation unchanged/);
   });
 
-  it('applies a small reduction instead of summarizing', async () => {
+  it('skips instead of summarizing when the reduction is below the minimum', async () => {
     // Keep the large Read, drop only the small Bash call: a few percent saved.
     const { compact, $, notices } = load(
       { apiKey: 'k', preserveRecentMessages: 1 },
@@ -220,9 +232,8 @@ describe('session.compact hook', () => {
     nextCalls.length = 0;
     const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
     expect(nextCalls).toHaveLength(0);
-    expect(out.skip).toBeUndefined();
-    expect(out.messages.length).toBeLessThan(transcript().length);
-    expect(notices.at(-1)).toMatch(/no summary/);
+    expect(out.skip).toMatch(/below 25% minimum/);
+    expect(notices.at(-1)).toMatch(/^compaction skipped, conversation unchanged/);
   });
 
   it('skips when Jev keeps everything', async () => {
@@ -230,7 +241,31 @@ describe('session.compact hook', () => {
     nextCalls.length = 0;
     const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
     expect(nextCalls).toHaveLength(0);
-    expect(out.skip).toMatch(/nothing to remove/);
+    expect(out.skip).toMatch(/below 25% minimum/);
+  });
+
+  it('applies a reduction at or above the minimum', async () => {
+    const { compact, $, notices } = load({ apiKey: 'k', preserveRecentMessages: 1 }, jevFetch(() => 0));
+    nextCalls.length = 0;
+    const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(0);
+    expect(out.skip).toBeUndefined();
+    expect(notices.at(-1)).toMatch(/no summary/);
+  });
+
+  it('hands the main conversation to the built-in summary when builtinFallback is on', async () => {
+    const small = load(
+      { apiKey: 'k', preserveRecentMessages: 1, builtinFallback: true },
+      jevFetch((name) => (name.endsWith('_t2') ? 0 : 0.9)),
+    );
+    nextCalls.length = 0;
+    await small.compact(small.$, { trigger: 'manual', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(1);
+    expect(small.notices.at(-1)).toMatch(/^fallback to built-in summary \(below 25% minimum/);
+
+    const failing = load({ preserveRecentMessages: 1, builtinFallback: true }, jevFetch(() => 0));
+    await failing.compact(failing.$, { trigger: 'manual', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(2);
   });
 
   it("falls back to the built-in summary for a helper's own transcript", async () => {
