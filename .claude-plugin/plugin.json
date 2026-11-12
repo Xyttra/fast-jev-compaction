@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "license": "MIT",
   "userConfig": {
@@ -28,11 +28,11 @@
       "description": "Context percentage at which turn.complete requests compaction.",
       "default": 60
     },
-    "minReductionRatio": {
+    "retryGapPercent": {
       "type": "number",
-      "title": "Minimum reduction ratio",
-      "description": "Minimum estimated character reduction required to replace history.",
-      "default": 0.25
+      "title": "Retry gap (percentage points)",
+      "description": "After an automatic compaction leaves the context at or above the compaction percentage, wait until it has grown by this many points before trying again.",
+      "default": 10
     },
     "maxStateTokens": {
       "type": "number",
