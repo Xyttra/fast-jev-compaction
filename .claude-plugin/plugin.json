@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "license": "MIT",
   "userConfig": {
@@ -45,6 +45,12 @@
       "title": "Fall back to the built-in summary",
       "description": "When on, the main conversation gets Claude Code's built-in summary whenever Jev fails or saves less than the minimum, instead of being left unchanged.",
       "default": false
+    },
+    "logFile": {
+      "type": "string",
+      "title": "Compaction log file",
+      "description": "Where the last 10 compaction results are written, one JSON line each. Empty uses ~/.claude/fast-jev-compaction-log.jsonl; off turns the log off.",
+      "default": ""
     },
     "maxStateTokens": {
       "type": "number",

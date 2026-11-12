@@ -50,6 +50,8 @@ export type HookConfig = CompactOptions & {
   /** When true, the main conversation gets the built-in summary instead of a skip. */
   builtinFallback: boolean;
   model: string;
+  /** Where results are logged; unset or empty is `~/.claude/fast-jev-compaction-log.jsonl`, `off` is none. */
+  logFile?: string;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -104,6 +106,8 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
+  const logFile = optionString(options, 'logFile')?.trim();
+  if (logFile) config.logFile = logFile;
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
   const pinnedTools = optionList(options, 'pinnedTools');
@@ -267,17 +271,86 @@ async function getApiKey(
   return undefined;
 }
 
-function notify(
-  $: {
-    ui: {
-      log: (text: string) => void;
-      toast: (text: string, options?: { timeoutMs?: number }) => void;
-    };
-  },
+/** How many compaction results the log file keeps; older lines are dropped. */
+export const LOG_MAX_ENTRIES = 10;
+const LOG_NAME = '.claude/fast-jev-compaction-log.jsonl';
+
+export type Outcome = 'kept' | 'skipped' | 'fallback';
+
+export type LogEntry = {
+  time: string;
+  session?: string;
+  cwd?: string;
+  trigger?: string;
+  agentId?: string;
+  outcome: Outcome;
+  text: string;
+};
+
+/** Appends `entry` as one JSON line to `existing` and keeps the last `max` lines. */
+export function appendLogEntry(existing: string, entry: LogEntry, max: number = LOG_MAX_ENTRIES): string {
+  const lines = existing.split('\n').filter((line) => line.trim().length > 0);
+  lines.push(JSON.stringify(entry));
+  return `${lines.slice(-max).join('\n')}\n`;
+}
+
+type HookContext = {
+  ui: {
+    log: (text: string) => void;
+    toast: (text: string, options?: { timeoutMs?: number }) => void;
+  };
+  env: { get: (name: string) => Promise<string | undefined> };
+  clock: { now: () => Promise<number> };
+  session: { id: () => Promise<string>; cwd: () => Promise<string> };
+  fs: { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<void> };
+};
+
+/** Awaits `get`, or undefined when it throws or rejects. */
+async function optional<T>(get: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await get();
+  } catch {
+    return undefined;
+  }
+}
+
+/** The log file's path: `logFile` when set, else `~/.claude/...`; null when it is `off`. */
+async function logPath($: HookContext, config: Pick<HookConfig, 'logFile'>): Promise<string | null> {
+  if (config.logFile) return config.logFile.toLowerCase() === 'off' ? null : config.logFile;
+  const home = (await optional(() => $.env.get('USERPROFILE'))) ?? (await optional(() => $.env.get('HOME')));
+  return home ? `${home}/${LOG_NAME}` : null;
+}
+
+/**
+ * Shows `text` and records it in the log file, so a client that hides
+ * toasts (T3 Code) can still tell what the last compactions did. A failure to
+ * write the log is noted in the UI log and never stops the compaction.
+ */
+async function report(
+  $: HookContext,
+  config: Pick<HookConfig, 'logFile'>,
+  event: { trigger?: string; agentId?: string },
+  outcome: Outcome,
   text: string,
-): void {
+): Promise<void> {
   $.ui.log(text);
   $.ui.toast(text, { timeoutMs: 15_000 });
+  try {
+    const path = await logPath($, config);
+    if (!path) return;
+    const now = (await optional(() => $.clock.now())) ?? Date.now();
+    const entry: LogEntry = { time: new Date(now).toISOString(), outcome, text };
+    const session = await optional(() => $.session.id());
+    if (session) entry.session = session;
+    const cwd = await optional(() => $.session.cwd());
+    if (cwd) entry.cwd = cwd;
+    if (event.trigger) entry.trigger = event.trigger;
+    if (event.agentId) entry.agentId = event.agentId;
+    const existing = (await optional(() => $.fs.read(path))) ?? '';
+    await $.fs.write(path, appendLogEntry(existing, entry));
+  } catch (error) {
+    $.ui.log(`compaction log not written (${error instanceof Error ? error.message : String(error)})`);
+  }
 }
 
 /**
@@ -288,23 +361,23 @@ function notify(
  * gets the built-in summary, because a helper cannot be steered and would
  * otherwise run out of context.
  */
-function giveUp(
-  $: Parameters<typeof notify>[0],
-  config: Pick<HookConfig, 'builtinFallback'>,
-  event: { agentId?: string },
+async function giveUp(
+  $: HookContext,
+  config: Pick<HookConfig, 'builtinFallback' | 'logFile'>,
+  event: { trigger?: string; agentId?: string },
   next: (e: any) => Promise<any>,
   reason: string,
-): Promise<any> | { skip: string } {
+): Promise<any> {
   if (event.agentId !== undefined) {
-    notify($, `fallback to built-in summary for helper ${event.agentId} (${reason})`);
+    await report($, config, event, 'fallback', `fallback to built-in summary for helper ${event.agentId} (${reason})`);
     return next(event);
   }
   if (config.builtinFallback) {
-    notify($, `fallback to built-in summary (${reason})`);
+    await report($, config, event, 'fallback', `fallback to built-in summary (${reason})`);
     return next(event);
   }
   const text = `compaction skipped, conversation unchanged (${reason})`;
-  notify($, text);
+  await report($, config, event, 'skipped', text);
   return { skip: text };
 }
 
@@ -334,8 +407,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
           `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`,
         );
       }
-      notify(
+      await report(
         $,
+        config,
+        event,
+        'kept',
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
       );
       return { messages };
