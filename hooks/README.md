@@ -70,8 +70,10 @@ helper ids in their results survive compaction); an empty value pins none.
 The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below
-`minReductionRatio`, the hook logs a fallback and delegates to Claude Code's
-built-in compaction. The outcome is shown as a toast and logged with the
+`minReductionRatio`, the hook skips the compaction (`{ skip }`) and the main
+conversation stays as it is; it is never summarized. A helper's own transcript
+(`agentId` set) still delegates to Claude Code's built-in compaction, since a
+helper cannot be steered and would otherwise run out of context. The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. The
 `turn.complete` hook requests

@@ -4,6 +4,7 @@ import {
   compactSession,
   decisionLog,
   decisionLogLines,
+  register,
   resolveHookConfig,
   summarize,
   toSessionMessages,
@@ -173,5 +174,58 @@ describe('compactSession', () => {
     await expect(
       compactSession(transcript(), { ...config, apiKey: 'k' }, async () => ({ status: 500, ok: false, text: 'x' })),
     ).rejects.toThrow(/500/);
+  });
+});
+
+describe('session.compact hook', () => {
+  type Handler = (...args: any[]) => Promise<any>;
+
+  function load(options: Record<string, unknown>, fetch: (url: string, init?: { body?: string }) => Promise<any>) {
+    const handlers: Record<string, Handler> = {};
+    const on = ((name: string, handler: Handler) => {
+      handlers[name] = handler;
+    }) as any;
+    register(on, options as any);
+    const notices: string[] = [];
+    const $ = {
+      env: { get: async () => undefined },
+      settings: { read: async () => ({}) },
+      http: { fetch },
+      ui: { log: () => {}, toast: (text: string) => notices.push(text) },
+    };
+    return { compact: handlers['session.compact']!, $, notices };
+  }
+
+  const nextCalls: unknown[] = [];
+  const next = async (e: unknown) => {
+    nextCalls.push(e);
+    return { messages: [] };
+  };
+
+  it('skips instead of summarizing the main conversation when Jev fails', async () => {
+    const { compact, $, notices } = load({ preserveRecentMessages: 1 }, jevFetch(() => 0));
+    nextCalls.length = 0;
+    const out = await compact($, { trigger: 'manual', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(0);
+    expect(out.skip).toMatch(/TYPESAFE_API_KEY/);
+    expect(notices.at(-1)).toMatch(/^compaction skipped, conversation unchanged/);
+  });
+
+  it('skips when the reduction is below the minimum', async () => {
+    const { compact, $ } = load(
+      { apiKey: 'k', preserveRecentMessages: 1, minReductionRatio: 0.99 },
+      jevFetch(() => 0.9),
+    );
+    nextCalls.length = 0;
+    const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(0);
+    expect(out.skip).toMatch(/below 99% minimum/);
+  });
+
+  it("falls back to the built-in summary for a helper's own transcript", async () => {
+    const { compact, $ } = load({ preserveRecentMessages: 1 }, jevFetch(() => 0));
+    nextCalls.length = 0;
+    await compact($, { trigger: 'auto', agentId: 'a1', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(1);
   });
 });

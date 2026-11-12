@@ -268,6 +268,27 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+/**
+ * When Jev cannot compact, the main conversation is left as it is (`{ skip }`)
+ * rather than summarized: a summary loses exact text. A helper's own
+ * transcript (`agentId` set) still gets the built-in summary, because a
+ * helper cannot be steered and would otherwise run out of context.
+ */
+function giveUp(
+  $: Parameters<typeof notify>[0],
+  event: { agentId?: string },
+  next: (e: any) => Promise<any>,
+  reason: string,
+): Promise<any> | { skip: string } {
+  if (event.agentId !== undefined) {
+    notify($, `fallback to built-in summary for helper ${event.agentId} (${reason})`);
+    return next(event);
+  }
+  const text = `compaction skipped, conversation unchanged (${reason})`;
+  notify($, text);
+  return { skip: text };
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
@@ -281,11 +302,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
       });
       for (const line of decisionLogLines(result)) $.ui.log(line);
       if (reductionRatio(result) < config.minReductionRatio) {
-        notify(
+        return giveUp(
           $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
+          event,
+          next,
+          `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`,
         );
-        return next(event);
       }
       notify(
         $,
@@ -293,11 +315,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
-      return next(event);
+      return giveUp($, event, next, error instanceof Error ? error.message : String(error));
     }
   });
 
