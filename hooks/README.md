@@ -52,6 +52,8 @@ The plugin declares these `userConfig` values in
 | `preserveRecentMessages` | `6` |
 | `compactAtPercent` | `60` |
 | `retryGapPercent` | `10` |
+| `minReductionRatio` | `0.25` |
+| `builtinFallback` | `false` |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
@@ -62,16 +64,18 @@ The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
 through `TYPESAFE_API_KEY`. The environment variable is the recommended
 development setup.
 
-Every option except `apiKey`, `compactAtPercent`, `retryGapPercent` and
-`model` is passed straight to the library; see the root README for what they
+Every option except `apiKey`, `compactAtPercent`, `retryGapPercent`,
+`minReductionRatio`, `builtinFallback` and `model` is passed straight to the library; see the root README for what they
 do. `pinnedTools` is a comma-separated list of tool names whose calls and
 results are always kept verbatim (by default the helper-agent tools, so the
 helper ids in their results survive compaction); an empty value pins none.
 The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
-fitted into the state budget, or Jev keeps everything (nothing to remove),
-the hook skips the compaction (`{ skip }`) and the main
-conversation stays as it is; it is never summarized. A helper's own transcript
+fitted into the state budget, or the estimated reduction is below
+`minReductionRatio`, the hook skips the compaction (`{ skip }`) and the main
+conversation stays as it is; it is never summarized. Setting
+`builtinFallback` to `true` restores the earlier behaviour: those cases go to
+Claude Code's built-in summary instead. A helper's own transcript
 (`agentId` set) still delegates to Claude Code's built-in compaction, since a
 helper cannot be steered and would otherwise run out of context. The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call

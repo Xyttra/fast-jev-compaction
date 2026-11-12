@@ -22,6 +22,8 @@ import type {
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
   retryGapPercent: 10,
+  minReductionRatio: 0.25,
+  builtinFallback: false,
   model: DEFAULT_MODEL,
 };
 
@@ -44,12 +46,20 @@ export type HookConfig = CompactOptions & {
   apiKey?: string;
   compactAtPercent: number;
   retryGapPercent: number;
+  minReductionRatio: number;
+  /** When true, the main conversation gets the built-in summary instead of a skip. */
+  builtinFallback: boolean;
   model: string;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
   const value = options[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionBoolean(options: PluginOptions, key: string, fallback: boolean): boolean {
+  const value = options[key];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function optionString(options: PluginOptions, key: string): string | undefined {
@@ -84,6 +94,12 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     ...numbers,
     compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
     retryGapPercent: optionNumber(options, 'retryGapPercent', HOOK_DEFAULTS.retryGapPercent),
+    minReductionRatio: optionNumber(
+      options,
+      'minReductionRatio',
+      HOOK_DEFAULTS.minReductionRatio,
+    ),
+    builtinFallback: optionBoolean(options, 'builtinFallback', HOOK_DEFAULTS.builtinFallback),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
   };
   const apiKey = optionString(options, 'apiKey');
@@ -265,19 +281,26 @@ function notify(
 }
 
 /**
- * When Jev cannot compact, the main conversation is left as it is (`{ skip }`)
- * rather than summarized: a summary loses exact text. A helper's own
- * transcript (`agentId` set) still gets the built-in summary, because a
- * helper cannot be steered and would otherwise run out of context.
+ * When Jev cannot compact, or would save less than minReductionRatio, the
+ * main conversation is left as it is (`{ skip }`) rather than summarized: a
+ * summary loses exact text. `builtinFallback` restores the built-in summary
+ * for the main conversation. A helper's own transcript (`agentId` set) always
+ * gets the built-in summary, because a helper cannot be steered and would
+ * otherwise run out of context.
  */
 function giveUp(
   $: Parameters<typeof notify>[0],
+  config: Pick<HookConfig, 'builtinFallback'>,
   event: { agentId?: string },
   next: (e: any) => Promise<any>,
   reason: string,
 ): Promise<any> | { skip: string } {
   if (event.agentId !== undefined) {
     notify($, `fallback to built-in summary for helper ${event.agentId} (${reason})`);
+    return next(event);
+  }
+  if (config.builtinFallback) {
+    notify($, `fallback to built-in summary (${reason})`);
     return next(event);
   }
   const text = `compaction skipped, conversation unchanged (${reason})`;
@@ -301,10 +324,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { status: response.status, ok: response.ok, text: response.text };
       });
       for (const line of decisionLogLines(result)) $.ui.log(line);
-      // Any saving is applied: a small trim keeps every message verbatim,
-      // where the alternative is a lossy summary or no change at all.
-      if (reductionRatio(result) <= 0) {
-        return giveUp($, event, next, `nothing to remove: ${summarize(result)}`);
+      // A trim this small frees too little to be worth replacing the history.
+      if (reductionRatio(result) < config.minReductionRatio) {
+        return giveUp(
+          $,
+          config,
+          event,
+          next,
+          `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`,
+        );
       }
       notify(
         $,
@@ -312,7 +340,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
-      return giveUp($, event, next, error instanceof Error ? error.message : String(error));
+      return giveUp($, configured, event, next, error instanceof Error ? error.message : String(error));
     }
   });
 

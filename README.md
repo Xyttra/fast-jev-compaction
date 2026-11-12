@@ -138,9 +138,10 @@ stage was needed, and the number of requests.
 
 The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
 is a thin adapter that feeds `session.compact` transcripts through `src/` and
-applies whatever reduction Jev finds, however small, and leaves the
-conversation unchanged (skips the compaction) on errors or when nothing can be
-removed, so the main conversation is never summarized; a
+applies Jev's reduction when it saves at least `minReductionRatio` (25%), and
+leaves the conversation unchanged (skips the compaction) on errors or a smaller
+saving, so the main conversation is never summarized (set `builtinFallback` to
+restore the built-in summary in those cases); a
 helper's own transcript still falls back to the built-in summary. See [`hooks/README.md`](hooks/README.md) for configuration and the
 Claude Code 2.1.274 type reference.
 
@@ -167,7 +168,7 @@ Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
 auto-compaction) goes through Jev: the toast reads
 `fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
 replaced the built-in summary, or `compaction skipped, conversation unchanged (…)`
-when Jev found nothing to remove or failed.
+when Jev would save less than the minimum or failed.
 
 To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
 from the repository root. No publishing step is required; the marketplace is
