@@ -61,7 +61,7 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest' });
+    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, retryGapPercent: 10, model: 'jev-latest' });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -71,7 +71,7 @@ describe('hook config', () => {
       model: 'jev-x',
       goal: 'g',
       compactAtPercent: 60,
-      minReductionRatio: 0.25,
+      retryGapPercent: 10,
     });
   });
 
@@ -193,7 +193,7 @@ describe('session.compact hook', () => {
       http: { fetch },
       ui: { log: () => {}, toast: (text: string) => notices.push(text) },
     };
-    return { compact: handlers['session.compact']!, $, notices };
+    return { compact: handlers['session.compact']!, turn: handlers['turn.complete']!, $, notices };
   }
 
   const nextCalls: unknown[] = [];
@@ -211,15 +211,26 @@ describe('session.compact hook', () => {
     expect(notices.at(-1)).toMatch(/^compaction skipped, conversation unchanged/);
   });
 
-  it('skips when the reduction is below the minimum', async () => {
-    const { compact, $ } = load(
-      { apiKey: 'k', preserveRecentMessages: 1, minReductionRatio: 0.99 },
-      jevFetch(() => 0.9),
+  it('applies a small reduction instead of summarizing', async () => {
+    // Keep the large Read, drop only the small Bash call: a few percent saved.
+    const { compact, $, notices } = load(
+      { apiKey: 'k', preserveRecentMessages: 1 },
+      jevFetch((name) => (name.endsWith('_t2') ? 0 : 0.9)),
     );
     nextCalls.length = 0;
     const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
     expect(nextCalls).toHaveLength(0);
-    expect(out.skip).toMatch(/below 99% minimum/);
+    expect(out.skip).toBeUndefined();
+    expect(out.messages.length).toBeLessThan(transcript().length);
+    expect(notices.at(-1)).toMatch(/no summary/);
+  });
+
+  it('skips when Jev keeps everything', async () => {
+    const { compact, $ } = load({ apiKey: 'k', preserveRecentMessages: 1 }, jevFetch(() => 0.9));
+    nextCalls.length = 0;
+    const out = await compact($, { trigger: 'auto', messages: transcript() }, next);
+    expect(nextCalls).toHaveLength(0);
+    expect(out.skip).toMatch(/nothing to remove/);
   });
 
   it("falls back to the built-in summary for a helper's own transcript", async () => {
@@ -227,5 +238,52 @@ describe('session.compact hook', () => {
     nextCalls.length = 0;
     await compact($, { trigger: 'auto', agentId: 'a1', messages: transcript() }, next);
     expect(nextCalls).toHaveLength(1);
+  });
+});
+
+describe('turn.complete auto-compaction', () => {
+  function drive(percents: number[], options: Record<string, unknown> = {}) {
+    let handler: (...args: any[]) => Promise<any> = async () => undefined;
+    register(((name: string, h: any) => {
+      if (name === 'turn.complete') handler = h;
+    }) as any, { compactAtPercent: 30, ...options } as any);
+    let current = 0;
+    const compactedAt: number[] = [];
+    const $ = {
+      ui: { log: () => {}, toast: () => {} },
+      session: {
+        usage: async () => ({ context: { percent: current } }),
+        compact: async () => {
+          compactedAt.push(current);
+          return { skip: 'x' };
+        },
+      },
+    };
+    return {
+      compactedAt,
+      async turn(percent: number) {
+        current = percent;
+        await handler($, {}, async () => undefined);
+      },
+    };
+  }
+
+  it('waits for the context to grow by the gap after a compaction that left it above the threshold', async () => {
+    const run = drive([]);
+    for (const p of [20, 32, 35, 41, 42, 52]) await run.turn(p);
+    // 32 compacts and stays at 32, so the next try is at 42; 42 stays, next at 52.
+    expect(run.compactedAt).toEqual([32, 42, 52]);
+  });
+
+  it('starts over once the context drops below the threshold', async () => {
+    const run = drive([]);
+    for (const p of [32, 10, 31]) await run.turn(p);
+    expect(run.compactedAt).toEqual([32, 31]);
+  });
+
+  it('reads the gap from the options', async () => {
+    const run = drive([], { retryGapPercent: 5 });
+    for (const p of [32, 36, 37]) await run.turn(p);
+    expect(run.compactedAt).toEqual([32, 37]);
   });
 });

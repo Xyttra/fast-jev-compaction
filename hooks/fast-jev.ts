@@ -21,7 +21,7 @@ import type {
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
-  minReductionRatio: 0.25,
+  retryGapPercent: 10,
   model: DEFAULT_MODEL,
 };
 
@@ -43,7 +43,7 @@ export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetch
 export type HookConfig = CompactOptions & {
   apiKey?: string;
   compactAtPercent: number;
-  minReductionRatio: number;
+  retryGapPercent: number;
   model: string;
 };
 
@@ -83,11 +83,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   const config: HookConfig = {
     ...numbers,
     compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
-    minReductionRatio: optionNumber(
-      options,
-      'minReductionRatio',
-      HOOK_DEFAULTS.minReductionRatio,
-    ),
+    retryGapPercent: optionNumber(options, 'retryGapPercent', HOOK_DEFAULTS.retryGapPercent),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
   };
   const apiKey = optionString(options, 'apiKey');
@@ -292,6 +288,10 @@ function giveUp(
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  // After a compaction that left the context at or above compactAtPercent,
+  // the next automatic try waits until it reaches this percent, so a session
+  // with little to trim is not compacted again after every turn.
+  let retryAtPercent = 0;
 
   on('session.compact', async ($, event, next) => {
     try {
@@ -301,13 +301,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { status: response.status, ok: response.ok, text: response.text };
       });
       for (const line of decisionLogLines(result)) $.ui.log(line);
-      if (reductionRatio(result) < config.minReductionRatio) {
-        return giveUp(
-          $,
-          event,
-          next,
-          `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`,
-        );
+      // Any saving is applied: a small trim keeps every message verbatim,
+      // where the alternative is a lossy summary or no change at all.
+      if (reductionRatio(result) <= 0) {
+        return giveUp($, event, next, `nothing to remove: ${summarize(result)}`);
       }
       notify(
         $,
@@ -322,10 +319,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
     if (compacting) return next(event);
     try {
-      const { context } = await $.session.usage();
-      if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
+      const before = (await $.session.usage()).context.percent ?? 0;
+      if (before < configured.compactAtPercent) {
+        retryAtPercent = 0;
+        return next(event);
+      }
+      if (before < retryAtPercent) return next(event);
       compacting = true;
       await $.session.compact();
+      const after = (await $.session.usage()).context.percent ?? 0;
+      retryAtPercent =
+        after >= configured.compactAtPercent ? after + configured.retryGapPercent : 0;
     } catch (error) {
       $.ui.log(
         `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
