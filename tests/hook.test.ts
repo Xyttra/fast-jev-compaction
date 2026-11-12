@@ -276,6 +276,87 @@ describe('session.compact hook', () => {
   });
 });
 
+describe('compaction log', () => {
+  type Handler = (...args: any[]) => Promise<any>;
+
+  function load(options: Record<string, unknown>, fetch: (url: string, init?: { body?: string }) => Promise<any>) {
+    const handlers: Record<string, Handler> = {};
+    register(((name: string, handler: Handler) => {
+      handlers[name] = handler;
+    }) as any, options as any);
+    const files = new Map<string, string>();
+    const $ = {
+      env: { get: async (name: string) => (name === 'USERPROFILE' ? 'C:\\Users\\u' : undefined) },
+      settings: { read: async () => ({}) },
+      http: { fetch },
+      ui: { log: () => {}, toast: () => {} },
+      clock: { now: async () => Date.UTC(2026, 10, 12, 9, 0, 0) },
+      session: { id: async () => 's1', cwd: async () => 'C:\\work' },
+      fs: {
+        read: async (path: string) => {
+          const text = files.get(path);
+          if (text === undefined) throw new Error('ENOENT');
+          return text;
+        },
+        write: async (path: string, text: string) => {
+          files.set(path, text);
+        },
+      },
+    };
+    return { compact: handlers['session.compact']!, $, files };
+  }
+
+  const LOG = 'C:\\Users\\u/.claude/fast-jev-compaction-log.jsonl';
+  const next = async () => ({ messages: [] });
+  const entries = (text: string | undefined) =>
+    (text ?? '').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+
+  it('writes one line per compaction with its outcome', async () => {
+    const ok = load({ apiKey: 'k', preserveRecentMessages: 1 }, jevFetch(() => 0));
+    await ok.compact(ok.$, { trigger: 'manual', messages: transcript() }, next);
+    const [entry] = entries(ok.files.get(LOG));
+    expect(entry).toMatchObject({
+      time: '2026-11-12T09:00:00.000Z',
+      session: 's1',
+      cwd: 'C:\\work',
+      trigger: 'manual',
+      outcome: 'kept',
+    });
+    expect(entry.text).toMatch(/no summary/);
+
+    const failing = load({ preserveRecentMessages: 1 }, jevFetch(() => 0));
+    await failing.compact(failing.$, { trigger: 'auto', messages: transcript() }, next);
+    expect(entries(failing.files.get(LOG))[0]).toMatchObject({ outcome: 'skipped', trigger: 'auto' });
+  });
+
+  it('keeps only the last 10 entries', async () => {
+    const run = load({ preserveRecentMessages: 1 }, jevFetch(() => 0));
+    for (let i = 0; i < 12; i++) {
+      await run.compact(run.$, { trigger: i === 11 ? 'auto' : 'manual', messages: transcript() }, next);
+    }
+    const kept = entries(run.files.get(LOG));
+    expect(kept).toHaveLength(10);
+    expect(kept.at(-1).trigger).toBe('auto');
+  });
+
+  it('writes nowhere when logFile is off, and a failing write never stops the compaction', async () => {
+    const off = load({ apiKey: 'k', preserveRecentMessages: 1, logFile: 'off' }, jevFetch(() => 0));
+    await off.compact(off.$, { trigger: 'manual', messages: transcript() }, next);
+    expect(off.files.size).toBe(0);
+
+    const empty = load({ apiKey: 'k', preserveRecentMessages: 1, logFile: '' }, jevFetch(() => 0));
+    await empty.compact(empty.$, { trigger: 'manual', messages: transcript() }, next);
+    expect(entries(empty.files.get(LOG))).toHaveLength(1);
+
+    const broken = load({ apiKey: 'k', preserveRecentMessages: 1 }, jevFetch(() => 0));
+    broken.$.fs.write = async () => {
+      throw new Error('EACCES');
+    };
+    const out = await broken.compact(broken.$, { trigger: 'manual', messages: transcript() }, next);
+    expect(out.messages).toBeDefined();
+  });
+});
+
 describe('turn.complete auto-compaction', () => {
   function drive(percents: number[], options: Record<string, unknown> = {}) {
     let handler: (...args: any[]) => Promise<any> = async () => undefined;

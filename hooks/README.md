@@ -54,6 +54,7 @@ The plugin declares these `userConfig` values in
 | `retryGapPercent` | `10` |
 | `minReductionRatio` | `0.25` |
 | `builtinFallback` | `false` |
+| `logFile` | `''` (`~/.claude/fast-jev-compaction-log.jsonl`) |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
@@ -65,7 +66,7 @@ through `TYPESAFE_API_KEY`. The environment variable is the recommended
 development setup.
 
 Every option except `apiKey`, `compactAtPercent`, `retryGapPercent`,
-`minReductionRatio`, `builtinFallback` and `model` is passed straight to the library; see the root README for what they
+`minReductionRatio`, `builtinFallback`, `logFile` and `model` is passed straight to the library; see the root README for what they
 do. `pinnedTools` is a comma-separated list of tool names whose calls and
 results are always kept verbatim (by default the helper-agent tools, so the
 helper ids in their results survive compaction); an empty value pins none.
@@ -79,7 +80,11 @@ Claude Code's built-in summary instead. A helper's own transcript
 (`agentId` set) still delegates to Claude Code's built-in compaction, since a
 helper cannot be steered and would otherwise run out of context. The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
-`decisions:` line with both probabilities is logged for diagnosis. The
+`decisions:` line with both probabilities is logged for diagnosis. Each
+outcome (`kept`, `skipped` or `fallback`) is also appended as one JSON line
+(time, session, cwd, trigger, text) to `logFile` (`off` turns it off), which keeps only the last
+10 lines, so clients that hide toasts can still check the result; a failed
+write is noted in the UI log and never stops the compaction. The
 `turn.complete` hook requests
 compaction when `context.percent` reaches `compactAtPercent`, with an
 in-flight guard. When a compaction leaves the context at or above
